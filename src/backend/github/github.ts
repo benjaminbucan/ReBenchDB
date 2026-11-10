@@ -8,7 +8,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { existsSync, readFileSync } from 'fs';
 import { log } from '../logging.js';
 import { BenchmarkCompletion } from '../../shared/api.js';
-import { dbConfig, siteConfig } from '../util.js';
+import { dbConfig, legacyGroupName, siteConfig } from '../util.js';
 import { getSummaryPlotFileName, renderCompare } from '../compare/report.js';
 
 export async function handleReBenchCompletion(
@@ -50,7 +50,8 @@ async function reportCompletion(
 ): Promise<void> {
   await db.reportCompletion(data);
 
-  const project = await db.getProjectByName(data.projectName);
+  // TODO: use the namespace sent by ReBench
+  const project = await db.getProjectByName(legacyGroupName, data.projectName);
   if (!project) {
     throw new Error(`No project with name ${data.projectName} found.`);
   }

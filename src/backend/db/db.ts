@@ -28,7 +28,6 @@ import type {
   MeasurementData,
   Metadata,
   Project,
-  ProjectWithNamespace,
   RevisionComparison,
   RevisionData,
   Run,
@@ -76,6 +75,11 @@ const measurementDataTableJoins = `
           JOIN Criterion ON criterion = criterion.id
           JOIN Run ON runId = run.id`;
 
+const selectProjectWithNamespace = `
+  SELECT p.*, n.name AS namespacename
+    FROM Project p
+    JOIN Namespace n ON p.namespaceId = n.id`;
+
 function filterCommitMessage(msg) {
   return msg
     .replaceAll('\\n', '\n') // resolve new lines
@@ -97,7 +101,6 @@ export abstract class Database {
   protected readonly timelineUpdater: BatchingTimelineUpdater | null;
 
   private readonly queries = {
-    fetchProjectByName: 'SELECT * FROM Project WHERE name = $1',
     insertMeasurementBatchedN: 'GENERATED'
   };
 
@@ -484,35 +487,44 @@ export abstract class Database {
     });
   }
 
-  public async recordProject(projectName: string): Promise<Project> {
-    return this.recordCached(this.projects, projectName, {
-      name: 'insertOrFetchProjectByName',
-      text: `WITH insertedRow AS (
+  public async recordProject(
+    namespaceName: string,
+    projectName: string
+  ): Promise<Project> {
+    const cacheKey = `${namespaceName}/${projectName}`;
+    return this.recordCached(this.projects, cacheKey, {
+      name: 'insertOrFetchProjectByNamespaceAndName',
+      text: `WITH ns AS (
+                  SELECT id, name FROM Namespace WHERE name = $3
+                ), insertedRow AS (
                   INSERT INTO Project (name, slug, namespaceId)
                   SELECT $1,
                          regexp_replace($2, '[^0-9a-zA-Z-]', '-', 'g'),
-                         n.id
-                    FROM Namespace n
-                   WHERE n.name = $3
+                         ns.id
+                    FROM ns
                   ON CONFLICT DO NOTHING
                   RETURNING *
+                ), foundRow AS (
+                  SELECT * FROM insertedRow
+                  UNION ALL
+                  SELECT p.*
+                    FROM Project p
+                    JOIN ns ON p.namespaceId = ns.id
+                   WHERE p.name = $1
                 )
-                SELECT * FROM insertedRow
-                UNION ALL
-                SELECT * FROM Project WHERE name = $1;`,
-      values: [projectName, projectName, legacyGroupName]
+                SELECT foundRow.*, ns.name AS namespacename
+                  FROM foundRow, ns;`,
+      values: [projectName, projectName, namespaceName]
     });
   }
 
   public async getProjectBySlugs(
     namespaceSlug: string,
     projectSlug: string
-  ): Promise<ProjectWithNamespace | undefined> {
+  ): Promise<Project | undefined> {
     const result = await this.query({
       name: 'fetchProjectByNamespaceAndSlug',
-      text: `SELECT p.*, n.name AS namespacename
-               FROM Project p
-               JOIN Namespace n ON p.namespaceId = n.id
+      text: `${selectProjectWithNamespace}
               WHERE lower(n.name) = lower($1)
                 AND lower(p.slug) = lower($2)`,
       values: [namespaceSlug, projectSlug]
@@ -527,7 +539,7 @@ export abstract class Database {
   public async getProjectByExpId(expId: number): Promise<Project | undefined> {
     const q = {
       name: 'fetchProjectByExpId',
-      text: `SELECT p.* FROM Project p
+      text: `${selectProjectWithNamespace}
               JOIN Experiment e ON e.projectId = p.id
               WHERE e.id = $1`,
       values: [expId]
@@ -541,20 +553,23 @@ export abstract class Database {
     return result.rows[0];
   }
 
-  public async getProjectByName(projectName: string): Promise<Project | null> {
-    return <Promise<Project | null>>this.getCached(this.projects, projectName, {
-      name: 'fetchProjectByName',
-      text: this.queries.fetchProjectByName,
-      values: [projectName]
+  public async getProjectByName(
+    namespaceName: string,
+    projectName: string
+  ): Promise<Project | null> {
+    const cacheKey = `${namespaceName}/${projectName}`;
+    return <Promise<Project | null>>this.getCached(this.projects, cacheKey, {
+      name: 'fetchProjectByNamespaceAndName',
+      text: `${selectProjectWithNamespace}
+              WHERE n.name = $1 AND p.name = $2`,
+      values: [namespaceName, projectName]
     });
   }
 
-  public async getAllProjects(): Promise<ProjectWithNamespace[]> {
+  public async getAllProjects(): Promise<Project[]> {
     const result = await this.query({
       name: 'fetchAllProjects',
-      text: `SELECT p.*, n.name AS namespacename
-               FROM Project p
-               JOIN Namespace n ON p.namespaceId = n.id
+      text: `${selectProjectWithNamespace}
               ORDER BY p.position DESC`
     });
     return result.rows;
@@ -563,7 +578,8 @@ export abstract class Database {
   public async getProject(projectId: number): Promise<Project | undefined> {
     const result = await this.query({
       name: 'fetchProjectById',
-      text: 'SELECT * FROM Project WHERE id = $1',
+      text: `${selectProjectWithNamespace}
+              WHERE p.id = $1`,
       values: [projectId]
     });
 
@@ -667,7 +683,8 @@ export abstract class Database {
       return <Experiment>this.exps.get(cacheKey);
     }
 
-    const project = await this.recordProject(data.projectName);
+    // TODO: use the namespace sent by ReBench
+    const project = await this.recordProject(legacyGroupName, data.projectName);
 
     return this.recordCached(this.exps, cacheKey, {
       name: 'insertOrFetchExperimentByProjectIdAndName',
