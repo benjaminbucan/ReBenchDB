@@ -17,11 +17,6 @@ import {
 } from '../../backend/util.js';
 import { Source } from '../db/types.js';
 
-/** @deprecated This is support for urls without the namespace slug. */
-export function redirectToLegacyProjectPage(ctx: ParameterizedContext): void {
-  ctx.redirect(`/${legacyGroupName}/${ctx.params.projectSlug}`);
-}
-
 /** Supports URLs that predate namespaces. */
 export function redirectToLegacyNamespace(ctx: ParameterizedContext): void {
   ctx.redirect(`/${legacyGroupName}${ctx.url}`);
